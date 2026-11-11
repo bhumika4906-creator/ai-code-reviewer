@@ -19,6 +19,7 @@ export default function App() {
     setResult(null);
 
     try {
+      // Sends BOTH the code and the selected language to the backend
       const data = await submitCodeReview(code, language);
       setResult(data);
     } catch (err) {
@@ -30,6 +31,9 @@ export default function App() {
 
   return (
     <div style={styles.container}>
+      {/* Spinner animation (inline styles can't define keyframes) */}
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
       {/* Header */}
       <header style={styles.header}>
         <div>
