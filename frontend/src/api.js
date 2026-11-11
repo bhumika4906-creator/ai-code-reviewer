@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://ai-code-reviewer-wwqb.onrender.com';
+const API_BASE_URL = 'https://ai-code-reviewer-wwqb.onrender.com';
 
 export async function submitCodeReview(code) {
   const response = await fetch(`${API_BASE_URL}/api/review`, {
