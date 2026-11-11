@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI Code Review Assistant",
     version="1.0.0",
-    description="Automated Python code review using LLM intelligence and static analysis validation.",
+    description="Automated code review using LLM intelligence and static analysis validation.",
     lifespan=lifespan,
 )
 
@@ -47,8 +47,10 @@ def health_check():
 @app.post("/api/review", response_model=CodeReviewResponse)
 def create_code_review(request: CodeReviewRequest):
     try:
-        # 1. AST Syntax Check
-        static_result = StaticAnalyzerService.parse_ast(request.code)
+        lang = getattr(request, "language", "python") or "python"
+
+        # 1. AST Syntax Check (Only for Python)
+        static_result = StaticAnalyzerService.parse_ast(request.code, language=lang)
         if not static_result["success"]:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -58,9 +60,9 @@ def create_code_review(request: CodeReviewRequest):
         # 2. LLM Analysis
         llm_result = llm_service.review_code(request.code)
 
-        # 3. Static Linters (Ruff)
+        # 3. Static Linters (Ruff - Only for Python)
         static_findings = []
-        ruff_result = StaticAnalyzerService.run_ruff(request.code)
+        ruff_result = StaticAnalyzerService.run_ruff(request.code, language=lang)
         if ruff_result.get("success") and ruff_result.get("stdout"):
             for raw_line in ruff_result["stdout"].splitlines():
                 if not raw_line.strip():
