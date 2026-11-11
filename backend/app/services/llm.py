@@ -1,64 +1,184 @@
+import os
 import json
-import logging
-
+import re
+from dotenv import load_dotenv
 from groq import Groq
+from app.schemas import Finding, LLMReviewResult
 
-from app.config import settings
-from app.schemas import LLMReviewResponse
+# Force Python to read your .env file directly
+load_dotenv()
 
-logger = logging.getLogger(__name__)
-
-REVIEW_SYSTEM_INSTRUCTION = """
-You are an expert Python code reviewer. Your job is to analyze Python code snippets for:
-1. Real bugs and runtime edge cases.
-2. Security vulnerabilities (OWASP top 10, injection, insecure deserialization, credential leakage).
-3. PEP 8 and readability issues.
-4. Suggested unit tests for critical edge cases.
-
-Be precise with line numbers. Do not hallucinate issues that do not exist.
-Output ONLY structured JSON conforming strictly to the requested schema.
-"""
+VALID_SEVERITIES = {"critical", "high", "medium", "low", "info"}
 
 
 class LLMService:
+    # Models that are NOT general chat models (classifiers, audio, embeddings, etc.)
+    _EXCLUDE = (
+        "guard", "whisper", "tts", "playai", "orpheus",
+        "embed", "classif", "moderation", "vision", "safeguard",
+    )
+
     def __init__(self):
-        self.client = None
-        if settings.GROQ_API_KEY:
-            self.client = Groq(api_key=settings.GROQ_API_KEY)
-        self.model_name = "llama-3.3-70b-versatile"
+        self.api_key = os.getenv("GROQ_API_KEY")
+        self.client = Groq(api_key=self.api_key)
+        self.model = self._get_active_model()
 
-    def review_code(self, code: str) -> LLMReviewResponse:
-        if not self.client:
-            logger.warning("GROQ_API_KEY is not configured; returning empty review.")
-            return LLMReviewResponse(findings=[])
+    def _get_active_model(self) -> str:
+        """Pick a chat model: .env pin first, then live discovery, then a default."""
+        pinned = os.getenv("GROQ_MODEL")
+        if pinned:
+            print(f"[LLMService] Using pinned model: {pinned}")
+            return pinned
 
-        prompt = f"Review this Python code snippet:\n\n```python\n{code}\n```"
+        try:
+            models = self.client.models.list().data
+            candidates = [
+                m.id for m in models
+                if getattr(m, "active", True)
+                and not any(bad in m.id.lower() for bad in self._EXCLUDE)
+            ]
+            for preferred in ("gpt-oss-20b", "gpt-oss-120b", "70b", "8b"):
+                for m_id in candidates:
+                    if preferred in m_id.lower():
+                        print(f"[LLMService] Auto-selected model: {m_id}")
+                        return m_id
+            if candidates:
+                print(f"[LLMService] Fallback model: {candidates[0]}")
+                return candidates[0]
+        except Exception as e:
+            print(f"[LLMService] Could not dynamically fetch models: {e}")
 
-        for attempt in range(2):
-            try:
-                chat_completion = self.client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": REVIEW_SYSTEM_INSTRUCTION},
-                        {"role": "user", "content": prompt},
-                    ],
-                    model=self.model_name,
-                    temperature=0.1,
-                    response_format={"type": "json_object"},
+        return "llama-3.1-8b-instant"
+
+    def _extract_json(self, raw_text: str) -> dict:
+        """Strip code fences / stray prose and parse the first JSON object."""
+        text = (raw_text or "").strip()
+        if not text:
+            raise ValueError("Model returned an empty response")
+
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.MULTILINE)
+        text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE).strip()
+
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            text = text[start:end + 1]
+        return json.loads(text)
+
+    @staticmethod
+    def _to_line(value):
+        """Coerce the model's 'line' value to an int, or None."""
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
+    def _call_model(self, system_msg: str, prompt: str) -> str:
+        """Call Groq once and return the text content (may be empty)."""
+        kwargs = dict(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=4096,  # leave room for reasoning + the JSON answer
+        )
+        # gpt-oss models are reasoning models: keep the thinking short
+        if "gpt-oss" in self.model.lower():
+            kwargs["extra_body"] = {"reasoning_effort": "low"}
+
+        completion = self.client.chat.completions.create(**kwargs)
+        content = completion.choices[0].message.content
+        print(f"[LLMService] Raw model output (first 300 chars): {(content or '')[:300]!r}")
+        return content or ""
+
+    def review_code(self, code: str) -> LLMReviewResult:
+        # Number each line so the model reads line numbers instead of guessing them
+        numbered_code = "\n".join(
+            f"{i}: {line}" for i, line in enumerate(code.splitlines(), start=1)
+        )
+
+        prompt = f"""
+You are an expert static code analysis and security auditing system.
+Review the following Python code for security vulnerabilities, runtime bugs, and edge cases.
+Each line of the code starts with its line number followed by a colon (for example "6: query = ...").
+That prefix is NOT part of the code. Use it as the "line" value in your findings.
+
+Code:
+---
+{numbered_code}
+---
+
+Respond ONLY with a valid JSON object matching this exact schema:
+{{
+  "summary": "Short 1-2 sentence overview of the issues found.",
+  "findings": [
+    {{
+      "line": 5,
+      "severity": "critical",
+      "category": "security",
+      "description": "Direct use of os.system allows command injection.",
+      "suggestion": "Use subprocess.run with arguments in a list, avoiding shell=True."
+    }}
+  ]
+}}
+
+Rules:
+- Report each distinct issue as its own separate finding. Never combine multiple issues into one finding.
+- "line" must be the line number where the issue occurs.
+- Severity must be one of: critical, high, medium, low.
+- Category should be one of: security, bug, performance, style.
+- If the code has no real issues, return an empty findings array and say so in the summary.
+"""
+        system_msg = "You are a professional code review engine that outputs pure JSON."
+
+        try:
+            raw_json = None
+            last_error = None
+
+            # Try up to 2 times: reasoning models occasionally return empty content
+            for attempt in (1, 2):
+                try:
+                    content = self._call_model(system_msg, prompt)
+                    raw_json = self._extract_json(content)
+                    break
+                except (ValueError, json.JSONDecodeError) as parse_err:
+                    last_error = parse_err
+                    print(f"[LLMService] Attempt {attempt} failed to parse: {parse_err}")
+
+            if raw_json is None:
+                raise last_error or ValueError("Could not parse model output")
+
+            findings_list = []
+            for item in raw_json.get("findings", []):
+                severity = str(item.get("severity", "medium")).lower()
+                if severity not in VALID_SEVERITIES:
+                    severity = "medium"
+
+                findings_list.append(
+                    Finding(
+                        line=self._to_line(item.get("line")),
+                        severity=severity,
+                        category=item.get("category", "bug"),
+                        # LLM returns "description"; your schema field is "message"
+                        message=item.get("description") or item.get("message", "Issue detected"),
+                        suggestion=item.get("suggestion") or item.get("suggested_fix", ""),
+                    )
                 )
 
-                raw_content = chat_completion.choices[0].message.content
-                if not raw_content:
-                    raise ValueError("Groq returned empty content.")
+            return LLMReviewResult(
+                summary=raw_json.get(
+                    "summary", f"Identified {len(findings_list)} potential issue(s)."
+                ),
+                findings=findings_list,
+            )
 
-                data = json.loads(raw_content)
-                return LLMReviewResponse(**data)
-            except Exception as exc:
-                logger.warning("Attempt %d failed to generate valid review: %s", attempt + 1, exc)
-                if attempt == 0:
-                    prompt += f"\n\nPrevious attempt failed with validation error: {str(exc)}. Fix format and return valid JSON only."
-                else:
-                    logger.error("All attempts to produce structured LLM review failed.")
-                    return LLMReviewResponse(findings=[])
+        except Exception as e:
+            print(f"[LLMService Error] Groq failed using model {self.model}: {e}")
+            return LLMReviewResult(
+                summary=f"Analysis encountered an API error: {str(e)}",
+                findings=[],
+            )
 
 
 llm_service = LLMService()

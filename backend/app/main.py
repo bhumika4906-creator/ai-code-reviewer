@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI Code Review Assistant",
     version="1.0.0",
-    description="Automated Python code review using Groq and static analysis validation.",
+    description="Automated Python code review using LLM intelligence and static analysis validation.",
     lifespan=lifespan,
 )
 
@@ -43,7 +43,7 @@ def health_check():
 @app.post("/api/review", response_model=CodeReviewResponse)
 def create_code_review(request: CodeReviewRequest):
     try:
-        llm_result = llm_service.review_code(request.code)
+        # 1. AST Syntax Check
         static_result = StaticAnalyzerService.parse_ast(request.code)
         if not static_result["success"]:
             raise HTTPException(
@@ -51,9 +51,13 @@ def create_code_review(request: CodeReviewRequest):
                 detail=f"Invalid Python syntax: {static_result['error']}",
             )
 
+        # 2. LLM Analysis
+        llm_result = llm_service.review_code(request.code)
+
+        # 3. Static Linters (Ruff)
         static_findings = []
         ruff_result = StaticAnalyzerService.run_ruff(request.code)
-        if ruff_result["success"]:
+        if ruff_result.get("success") and ruff_result.get("stdout"):
             for raw_line in ruff_result["stdout"].splitlines():
                 if not raw_line.strip():
                     continue
@@ -63,17 +67,17 @@ def create_code_review(request: CodeReviewRequest):
                         line_no = int(parts[1].strip())
                     except ValueError:
                         continue
-                    static_findings.append(
-                        {
-                            "line": line_no,
-                            "category": "style",
-                            "severity": "low",
-                            "description": parts[-1].strip(),
-                            "suggested_fix": "Review and fix the reported lint issue.",
-                        }
-                    )
+                    static_findings.append({
+                        "line": line_no,
+                        "category": "style",
+                        "severity": "low",
+                        "message": parts[-1].strip(),
+                        "suggestion": "Review and fix the reported lint issue.",
+                    })
 
+        # 4. Merge findings without dropping LLM detections
         findings = CrossCheckerService.merge_findings(llm_result.findings, static_findings)
+
     except HTTPException:
         raise
     except Exception as exc:
@@ -85,9 +89,10 @@ def create_code_review(request: CodeReviewRequest):
     response = CodeReviewResponse(
         original_code=request.code,
         findings=findings,
-        summary=f"Found {len(findings)} potential issue(s).",
+        summary=llm_result.summary or f"Found {len(findings)} potential issue(s).",
     )
 
+    # 5. Persist to SQLite
     db: Session = SessionLocal()
     try:
         record = ReviewResult(
@@ -99,6 +104,8 @@ def create_code_review(request: CodeReviewRequest):
         db.commit()
         db.refresh(record)
         response.id = record.id
+    except Exception as db_err:
+        print(f"[DB Warning] Could not persist review: {db_err}")
     finally:
         db.close()
 
