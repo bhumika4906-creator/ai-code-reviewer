@@ -28,7 +28,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # Allow your specific Render frontend URL and local Vite server
+    allow_origins=[
+        "http://localhost:5173",
+        "https://ai-code-reviewer-1-9a9s.onrender.com"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
