@@ -7,7 +7,10 @@ from pathlib import Path
 
 class StaticAnalyzerService:
     @staticmethod
-    def run_ruff(code: str):
+    def run_ruff(code: str, language: str = "python"):
+        if language.lower() != "python":
+            return {"success": True, "stdout": "", "stderr": ""}
+            
         temp_path = Path("temp_review.py")
         temp_path.write_text(code, encoding="utf-8")
         try:
@@ -27,7 +30,10 @@ class StaticAnalyzerService:
                 temp_path.unlink(missing_ok=True)
 
     @staticmethod
-    def run_bandit(code: str):
+    def run_bandit(code: str, language: str = "python"):
+        if language.lower() != "python":
+            return {"success": True, "payload": {}, "stderr": ""}
+            
         temp_path = Path("temp_review.py")
         temp_path.write_text(code, encoding="utf-8")
         try:
@@ -50,7 +56,10 @@ class StaticAnalyzerService:
                 temp_path.unlink(missing_ok=True)
 
     @staticmethod
-    def parse_ast(code: str):
+    def parse_ast(code: str, language: str = "python"):
+        if language.lower() != "python":
+            return {"success": True, "tree": None}
+            
         try:
             tree = ast.parse(code)
             return {"success": True, "tree": tree}
