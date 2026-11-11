@@ -18,16 +18,20 @@ export default function App() {
     setResult(null);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/review', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          code: code,
-          language: language,
-        }),
-      });
+      const handleReview = async () => {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      const data = await submitCodeReview(code, language);
+      setResult(data);
+    } catch (err) {
+      setError(err.message || 'Failed to fetch');
+    } finally {
+      setLoading(false);
+    }
+  };
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
