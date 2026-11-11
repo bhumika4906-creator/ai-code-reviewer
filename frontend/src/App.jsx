@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { submitCodeReview } from './api';
 
 const SAMPLE_CODE = `def calculate_average(numbers):
     total = sum(numbers)
@@ -18,29 +19,7 @@ export default function App() {
     setResult(null);
 
     try {
-      const handleReview = async () => {
-    setLoading(true);
-    setError(null);
-    setResult(null);
-
-    try {
       const data = await submitCodeReview(code, language);
-      setResult(data);
-    } catch (err) {
-      setError(err.message || 'Failed to fetch');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(
-          errorData.detail || `Server responded with status ${response.status}`
-        );
-      }
-
-      const data = await response.json();
       setResult(data);
     } catch (err) {
       setError(err.message || 'Failed to connect to backend server');
