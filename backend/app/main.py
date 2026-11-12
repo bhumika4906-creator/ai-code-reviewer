@@ -11,6 +11,7 @@ from app.schemas import CodeReviewRequest, CodeReviewResponse, Finding
 from app.services.analyzer import StaticAnalyzerService
 from app.services.cross_checker import CrossCheckerService
 from app.services.llm import llm_service
+from app.services.language_check import detect_mismatch
 
 
 @asynccontextmanager
@@ -46,10 +47,18 @@ def health_check():
 
 @app.post("/api/review", response_model=CodeReviewResponse)
 def create_code_review(request: CodeReviewRequest):
-    try:
-        lang = getattr(request, "language", "python") or "python"
+    lang = (getattr(request, "language", "python") or "python").strip().lower()
 
-        # 1. AST Syntax Check (Only for Python)
+    # 0. Reject obvious language mismatches before doing any work
+    mismatch = detect_mismatch(request.code, lang)
+    if mismatch:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=mismatch,
+        )
+
+    try:
+        # 1. AST syntax check (the analyzer skips non-Python languages)
         static_result = StaticAnalyzerService.parse_ast(request.code, language=lang)
         if not static_result["success"]:
             raise HTTPException(
@@ -57,10 +66,10 @@ def create_code_review(request: CodeReviewRequest):
                 detail=f"Invalid Python syntax: {static_result['error']}",
             )
 
-        # 2. LLM Analysis
-        llm_result = llm_service.review_code(request.code)
+        # 2. LLM analysis
+        llm_result = llm_service.review_code(request.code, lang)
 
-        # 3. Static Linters (Ruff - Only for Python)
+        # 3. Static linters (Ruff)
         static_findings = []
         ruff_result = StaticAnalyzerService.run_ruff(request.code, language=lang)
         if ruff_result.get("success") and ruff_result.get("stdout"):
