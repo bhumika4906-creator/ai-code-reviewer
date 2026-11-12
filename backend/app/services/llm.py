@@ -10,6 +10,11 @@ load_dotenv()
 
 VALID_SEVERITIES = {"critical", "high", "medium", "low", "info"}
 
+LANGUAGE_LABELS = {
+    "python": "Python",
+    "javascript": "JavaScript",
+}
+
 
 class LLMService:
     # Models that are NOT general chat models (classifiers, audio, embeddings, etc.)
@@ -92,7 +97,10 @@ class LLMService:
         print(f"[LLMService] Raw model output (first 300 chars): {(content or '')[:300]!r}")
         return content or ""
 
-    def review_code(self, code: str) -> LLMReviewResult:
+    def review_code(self, code: str, language: str = "python") -> LLMReviewResult:
+        lang_key = (language or "python").strip().lower()
+        lang_label = LANGUAGE_LABELS.get(lang_key, language or "Python")
+
         # Number each line so the model reads line numbers instead of guessing them
         numbered_code = "\n".join(
             f"{i}: {line}" for i, line in enumerate(code.splitlines(), start=1)
@@ -100,7 +108,9 @@ class LLMService:
 
         prompt = f"""
 You are an expert static code analysis and security auditing system.
-Review the following Python code for security vulnerabilities, runtime bugs, and edge cases.
+The code below is written in {lang_label}. Review it as {lang_label} code, using {lang_label} syntax and conventions.
+Do NOT report syntax that is valid {lang_label} as an error.
+Look for security vulnerabilities, runtime bugs, and edge cases.
 Each line of the code starts with its line number followed by a colon (for example "6: query = ...").
 That prefix is NOT part of the code. Use it as the "line" value in your findings.
 
@@ -117,8 +127,8 @@ Respond ONLY with a valid JSON object matching this exact schema:
       "line": 5,
       "severity": "critical",
       "category": "security",
-      "description": "Direct use of os.system allows command injection.",
-      "suggestion": "Use subprocess.run with arguments in a list, avoiding shell=True."
+      "description": "Direct use of eval allows arbitrary code execution.",
+      "suggestion": "Avoid eval and parse the input with a safe, explicit parser instead."
     }}
   ]
 }}
